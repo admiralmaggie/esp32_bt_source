@@ -17,6 +17,7 @@
 #include "nvs_flash.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
 
 #include "esp_bt.h"
 #include "bt_app_core.h"
@@ -48,6 +49,9 @@
 // AVRCP used transaction label
 #define APP_RC_CT_TL_GET_CAPS            (0)
 #define APP_RC_CT_TL_RN_VOLUME_CHANGE    (1)
+
+// BT wipe out pin
+#define GPIO_PIN_0 0
 
 /* event for handler "bt_av_hdl_stack_up */
 enum {
@@ -105,7 +109,7 @@ static esp_bd_addr_t s_peer_bda = {0};
 static uint8_t s_peer_bdname[ESP_BT_GAP_MAX_BDNAME_LEN + 1];
 static int s_a2d_state = APP_AV_STATE_IDLE;
 static int s_media_state = APP_AV_MEDIA_STATE_IDLE;
-static int s_intv_cnt = 0;
+//static int s_intv_cnt = 0;
 static int s_connecting_intv = 0;
 static uint32_t s_pkt_cnt = 0;
 static esp_avrc_rn_evt_cap_mask_t s_avrc_peer_rn_cap;
@@ -127,6 +131,33 @@ static char *bda2str(esp_bd_addr_t bda, char *str, size_t size)
     return str;
 }
 
+
+// delete all paired devices
+void perform_wipe_security_db(void){
+	uint8_t paired_device_addr[10][6];
+	char bda_str[18];
+
+	// get number of bound (pair) devices
+	int count = esp_bt_gap_get_bond_device_num();
+	if(!count) {
+		ESP_LOGI(CUSTOM_AR_TAG, "No pair devices found! Nothing to delete!");
+		return;
+	}
+	ESP_LOGI(CUSTOM_AR_TAG, "Number of paired devices: %d", count);
+
+	// get all of pair devices
+	ESP_ERROR_CHECK(esp_bt_gap_get_bond_device_list(&count, paired_device_addr));
+	for(int i = 0; i < count; i++) {
+		ESP_LOGI(CUSTOM_AR_TAG, "Deleting paired device with MAC %s", bda2str(paired_device_addr[i], bda_str, 18));
+		ESP_ERROR_CHECK(esp_bt_gap_remove_bond_device(paired_device_addr[i]));
+	}
+
+	// reboot ESP
+	ESP_LOGI(CUSTOM_AR_TAG, "Rebooting ESP...");
+	esp_restart();
+}
+
+
 void app_main(void)
 {
     // Initialize NVS.
@@ -136,6 +167,28 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK( ret );
+
+    ESP_LOGI(CUSTOM_AR_TAG, "Configuring GPIO...");
+    // setup GPIO
+    gpio_config_t io_conf;
+	io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+	io_conf.mode = GPIO_MODE_INPUT;
+	io_conf.pin_bit_mask = GPIO_PIN_0;
+	io_conf.pull_down_en = 0;
+	io_conf.pull_up_en = 0;
+	gpio_config(&io_conf);
+
+	// check if BOOT button is held down
+	int i=0;
+	int wipe_security_db=0;
+	while(++i<100) {
+		vTaskDelay(10 / portTICK_RATE_MS);
+		if (gpio_get_level(GPIO_PIN_0)==0) {
+			ESP_LOGI(CUSTOM_AR_TAG, "BOOT button detected! Bluetooth Security database will be deleted!");
+			wipe_security_db = true;
+			break;
+		}
+	}
 
     // release controller memory
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_BLE));
@@ -165,6 +218,10 @@ void app_main(void)
         ESP_LOGE(BT_AV_TAG, "%s enable bluedroid failed\n", __func__);
         return;
     }
+
+    // delete pair devices devices
+	if (wipe_security_db)
+		perform_wipe_security_db();
 
     /* create application task */
     bt_app_task_start_up();
