@@ -160,6 +160,9 @@ void perform_wipe_security_db(void){
 
 void app_main(void)
 {
+	// set log to warning
+	esp_log_level_set("*", ESP_LOG_WARN);
+
     // Initialize NVS.
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
